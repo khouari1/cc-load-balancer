@@ -14,10 +14,11 @@ fun main(args: Array<String>) = runBlocking {
     if (args.isEmpty()) {
         throw IllegalArgumentException("Expected servers to be provided")
     }
-    // TODO: incorporate healthcheck
-    val (servers, healthCheckPeriodInSeconds) = getConfiguration(args)
+    val configuration = getConfiguration(args)
     val serverSocket = ServerSocket(9999)
-    val loadBalancer = createLoadBalancer(servers)
+    val loadBalancer = createLoadBalancer(configuration)
+    loadBalancer.startHealthCheck()
+
     while (true) {
         val accept = serverSocket.accept()
         launch(Dispatchers.Default) {
@@ -32,36 +33,13 @@ fun main(args: Array<String>) = runBlocking {
                     println("Received request...")
                     println(clientRequest.joinToString(separator = "\n"))
 
-                    val (serverHost, serverPort) = loadBalancer.getServer()
-
-                    val destinationSocket = Socket(serverHost, serverPort)
-                    val destinationOutput = destinationSocket.getWriter()
-                    val destinationInput = destinationSocket.getReader()
-                    try {
-                        clientRequest.forEach { line ->
-                            destinationOutput.write("$line\n")
+                    val server = loadBalancer.getServer()
+                    val destinationResponse = server.send(clientRequest)
+                    socket.getWriter().use { writer ->
+                        destinationResponse.forEach { line ->
+                            writer.write("$line\n")
                         }
-                        destinationOutput.write("\r\n")
-                        destinationOutput.flush()
-
-                        val destinationResponse = mutableListOf<String>()
-                        var inputLine = destinationInput.readLine()
-                        while (inputLine != null) {
-                            destinationResponse.add(inputLine)
-                            inputLine = destinationInput.readLine()
-                        }
-                        println("Received response from destination server...")
-                        println(destinationResponse.joinToString(separator = "\n"))
-
-                        socket.getWriter().use { writer ->
-                            destinationResponse.forEach { line ->
-                                writer.write("$line\n")
-                            }
-                            writer.write("\r\n")
-                        }
-                    } finally {
-                        destinationInput.close()
-                        destinationOutput.close()
+                        writer.write("\r\n")
                     }
                 }
             }
@@ -89,7 +67,8 @@ private fun getServers(args: Array<String>) = args.first().split(",").map { serv
     Server(host, port.toInt())
 }
 
-private fun createLoadBalancer(servers: List<Server>) = RoundRobin(servers)
+private fun createLoadBalancer(configuration: Configuration) =
+    RoundRobin(configuration.servers, configuration.healthCheckPeriodInSeconds)
 
 fun Socket.getWriter() = BufferedWriter(OutputStreamWriter(getOutputStream()))
 fun Socket.getReader() = BufferedReader(InputStreamReader(getInputStream()))
